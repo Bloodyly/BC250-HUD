@@ -1,0 +1,9 @@
+# Git LFS for binary release assets
+Release/kernel/kernel8.img filter=lfs diff=lfs merge=lfs -text
+Release/kernel/*.tar.xz filter=lfs diff=lfs merge=lfs -text
+Release/hud/hudc_new filter=lfs diff=lfs merge=lfs -text
+Release/dtbs/*.dtb filter=lfs diff=lfs merge=lfs -text
+Release/dtbs/overlays/*.dtbo filter=lfs diff=lfs merge=lfs -text
+
+# Pi kernel config (binary-safe but text in practice)
+kernel/pi-running.config text eol=lf

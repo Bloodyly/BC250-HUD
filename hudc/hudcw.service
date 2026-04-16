@@ -1,0 +1,51 @@
+[Unit]
+Description=BC250 HUD Display (cage/Wayland + threaded) — Wayland-Variante
+After=multi-user.target seatd.service
+# Max 5 Neustarts in 5 Minuten
+StartLimitBurst=5
+StartLimitIntervalSec=300
+# Nicht gleichzeitig mit der EGLFS-Variante laufen
+Conflicts=hudc.service
+
+[Service]
+# cage + hudc_new als pi laufen (video+render Gruppe → DRM-Zugriff)
+# ExecStartPre mit '+'-Präfix laufen trotz User=pi als root (CAP_SYS_TTY_CONFIG)
+User=pi
+WorkingDirectory=/home/pi/hudc
+
+# VT wechseln + GPU-Bereitschaft abwarten ('+' = root, auch bei User=pi)
+ExecStartPre=+/bin/chvt 2
+ExecStartPre=+/bin/sh -c 'for i in $(seq 1 30); do [ -e /dev/dri/card0 ] && exit 0; sleep 1; done; exit 0'
+
+# Wayland-Socket-Verzeichnis für pi anlegen ('+' = root)
+ExecStartPre=+/bin/mkdir -p /run/cage-hud
+ExecStartPre=+/bin/chown pi:pi /run/cage-hud
+ExecStartPre=+/bin/chmod 0700 /run/cage-hud
+
+# cage + hudc_new als pi-User (video/render-Gruppe hat DRM-Rechte)
+Environment=XDG_RUNTIME_DIR=/run/cage-hud
+Environment=WLR_BACKENDS=drm
+Environment=WLR_DRM_DEVICES=/dev/dri/card0
+Environment=WLR_NO_HARDWARE_CURSORS=1
+Environment=WLR_LIBINPUT_NO_DEVICES=1
+Environment=LIBSEAT_BACKEND=seatd
+Environment=SEATD_SOCK=/run/seatd.sock
+Environment=DISPLAY=
+
+# Qt-App (von cage geerbt)
+Environment=QT_QPA_PLATFORM=wayland
+Environment=QT_AUTO_SCREEN_SCALE_FACTOR=0
+Environment=QT_SCALE_FACTOR=1
+Environment=QT_WAYLAND_DISABLE_WINDOWDECORATION=1
+Environment=QSG_RENDER_LOOP=threaded
+
+ExecStart=/usr/bin/cage -d -- /home/pi/hudc/hudc_new
+
+Restart=always
+RestartSec=30
+TimeoutStopSec=8
+KillMode=mixed
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=multi-user.target

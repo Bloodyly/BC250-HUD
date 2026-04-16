@@ -1,0 +1,30 @@
+[Unit]
+Description=BC250 HUD Display (C++ / Qt Quick)
+After=multi-user.target
+# Max 5 Neustarts in 5 Minuten — verhindert endlose SIGSEGV-Crash-Schleifen
+StartLimitBurst=5
+StartLimitIntervalSec=300
+
+[Service]
+User=root
+WorkingDirectory=/home/pi/hudc
+
+# VT wechseln + GPU-Bereitschaft abwarten (max 30s)
+ExecStartPre=/bin/chvt 2
+ExecStartPre=/bin/sh -c 'for i in $(seq 1 30); do cat /sys/class/drm/card0/device/gpu_busy_percent >/dev/null 2>&1 && exit 0; sleep 1; done; exit 0'
+
+Environment=QT_QPA_PLATFORM=eglfs
+Environment=QT_QPA_EGLFS_HIDECURSOR=1
+Environment=QT_QPA_EGLFS_KMS_CONFIG=/home/pi/hud/kms.json
+Environment=QT_QPA_EGLFS_SWAPINTERVAL=1
+Environment=QSG_RENDER_LOOP=basic
+
+ExecStart=/home/pi/hudc/hudc_new
+Restart=always
+RestartSec=30
+TimeoutStopSec=8
+KillMode=mixed
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=multi-user.target

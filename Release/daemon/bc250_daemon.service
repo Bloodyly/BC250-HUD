@@ -1,0 +1,24 @@
+[Unit]
+Description=BC250 HUD Host Daemon
+# network.target ist deutlich früher als network-online.target.
+# Der Daemon hat eigene Retry-Logik (_connect loop, 2s Sleep) und
+# wartet selbst bis das USB-Gadget-Interface (10.10.5.1) verfügbar ist.
+After=network.target
+# Vor Shutdown/Reboot stoppen → SIGTERM-Handler sendet cmd an Pi
+Before=shutdown.target reboot.target halt.target
+
+[Service]
+User=user
+Environment=PYTHONUNBUFFERED=1
+Environment=HOME=/var/home/user
+ExecStart=/usr/bin/python3 /opt/hud/bc250_daemon.py
+Restart=on-failure
+RestartSec=5
+# Gibt dem SIGTERM-Handler Zeit den Befehl zu senden (1.5s TCP-Timeout + 0.3s Pause)
+TimeoutStopSec=5
+KillSignal=SIGTERM
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

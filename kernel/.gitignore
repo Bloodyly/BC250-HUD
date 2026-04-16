@@ -1,0 +1,5 @@
+# Kernel-Source und Build-Output — nicht ins Repo
+linux-rpi/
+output/
+pi-running.config
+build.log

@@ -1,0 +1,40 @@
+# Build artifacts
+*.o
+*.a
+*.so
+build/
+local_build/
+
+# Kernel source and build (large, cloned on demand via build.sh)
+kernel/linux-rpi/
+kernel/output/
+kernel/build.log
+
+# Pre-built binary in source tree (use Release/ version)
+hudc/hudc_new
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Qt build artifacts
+CMakeCache.txt
+CMakeFiles/
+Makefile
+moc_*.cpp
+qrc_*.cpp
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets / local overrides
+*.local
+*.env

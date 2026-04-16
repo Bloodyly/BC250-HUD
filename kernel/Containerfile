@@ -1,0 +1,13 @@
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git bc bison flex \
+    libssl-dev libelf-dev \
+    gcc binutils \
+    gcc-aarch64-linux-gnu \
+    binutils-aarch64-linux-gnu \
+    make python3 cpio rsync \
+    xz-utils kmod ca-certificates file \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /work
