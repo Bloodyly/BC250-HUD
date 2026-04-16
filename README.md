@@ -91,6 +91,95 @@ bash host-setup.sh
 
 ---
 
+## The QML UI File
+
+All visual output is defined in a single file: **`hudc/hud.qml`** (on the Pi: `/home/pi/hudc/hud.qml`).
+
+This is a [Qt Quick](https://doc.qt.io/qt-6/qtquick-index.html) file — a declarative UI language. It describes the layout, animations, colours and data bindings of the HUD. No C++ knowledge is needed to change colours, font sizes, labels, panel positions or animations.
+
+The C++ binary (`hudc_new`) watches this file and **automatically reloads it every 5 seconds** after a change is detected — no service restart needed. Changes appear on the display within seconds of saving.
+
+### Live-Editing via SSH
+
+```bash
+# Connect to Pi
+ssh pi@10.10.5.2          # password: raspberry
+
+# Edit the UI file directly
+nano /home/pi/hudc/hud.qml
+```
+
+Save with `Ctrl+O`, exit with `Ctrl+X`. The HUD updates itself on the next 5-second poll cycle.
+
+For larger edits, edit locally and push to the Pi:
+
+```bash
+# Edit locally, then deploy (no restart needed)
+sshpass -p raspberry scp hudc/hud.qml pi@10.10.5.2:/home/pi/hudc/hud.qml
+```
+
+---
+
+## Adapting to a Different Display
+
+Three things need to match for a different display: the HDMI signal, the Qt window size, and the layout.
+
+### 1. HDMI Mode — `/boot/firmware/config.txt`
+
+The relevant lines (see [config/config.txt](config/config.txt)):
+
+```ini
+hdmi_group=2
+hdmi_mode=87
+hdmi_cvt=1920 480 60 6 0 0 0   # W H fps aspect
+hdmi_force_hotplug=1
+```
+
+`hdmi_cvt` format: `<width> <height> <refresh> <aspect> <margins> <interlace> <rb>`
+
+Common values:
+
+| Display | hdmi_cvt line |
+|---|---|
+| 480×1920 portrait (current) | `hdmi_cvt=1920 480 60 6 0 0 0` |
+| 1920×480 landscape | `hdmi_cvt=1920 480 60 6 0 0 0` (same signal, layout differs) |
+| 720×1280 portrait | `hdmi_cvt=1280 720 60 6 0 0 0` |
+| 1080×1920 portrait | `hdmi_cvt=1920 1080 60 6 0 0 0` |
+| 800×480 landscape | `hdmi_cvt=800 480 60 6 0 0 0` |
+
+> Note: `hdmi_cvt` always takes **width first, then height** — regardless of physical orientation. After editing, copy to Pi and reboot:
+> ```bash
+> sshpass -p raspberry scp config/config.txt pi@10.10.5.2:/boot/firmware/config.txt
+> sshpass -p raspberry ssh pi@10.10.5.2 'sudo reboot'
+> ```
+
+### 2. Qt Window Size — `hud.qml`
+
+At the top of `hud.qml`, the window dimensions must match the display resolution:
+
+```qml
+Window {
+    id: root
+    width:  480    // ← physical pixel width of your display
+    height: 1920   // ← physical pixel height of your display
+    ...
+}
+```
+
+Change both values to match your display, then save. The hot-reload will pick it up within 5 seconds, or restart the service for an immediate effect.
+
+### 3. Layout
+
+The current layout is designed for a tall portrait panel (480×1920). Most elements use `root.width` and `root.height` for positioning so they scale with the window, but the panel arrangement is inherently vertical.
+
+For a **different portrait resolution** (e.g. 720×1280): update width/height as above, then tweak font sizes and panel heights to taste — the overall structure stays the same.
+
+For a **landscape orientation** (e.g. 1920×480 or 800×480): the panel order needs to change from vertical stacking to horizontal. This requires rearranging the main panels (`panelCPU`, `gpuGauge`, `ramPanel`, `timePanel`) from top-to-bottom to left-to-right in the QML.
+
+For a **display without PWM backlight control**: the backlight GPIO calls in `backlightcontroller.cpp` can be disabled, or pigpiod can simply be left running harmlessly.
+
+---
+
 ## Architecture
 
 ### Display Stack
@@ -169,10 +258,17 @@ sshpass -p raspberry scp hudc/hud.qml pi@10.10.5.2:/home/pi/hudc/hud.qml
 sshpass -p raspberry ssh pi@10.10.5.2 'sudo systemctl restart hudcw.service'
 ```
 
-### QML Only (no recompile needed)
+### QML Only (no recompile, no restart needed)
+
+The binary watches `hud.qml` and reloads it automatically within 5 seconds of a change.
 
 ```bash
 sshpass -p raspberry scp hudc/hud.qml pi@10.10.5.2:/home/pi/hudc/hud.qml
+# HUD updates itself — no restart required
+```
+
+Force an immediate reload (optional):
+```bash
 sshpass -p raspberry ssh pi@10.10.5.2 'sudo systemctl restart hudcw.service'
 ```
 
