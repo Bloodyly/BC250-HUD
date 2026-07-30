@@ -43,6 +43,7 @@ SYSFS_INTERVAL = 0.500
 STEAM_INTERVAL = 0.500
 
 MANGOHUD_OUT   = Path.home() / ".local/share/MangoHud/logs"
+MANGOHUD_ENV_CONF = Path.home() / ".config/environment.d/mangohud-logging.conf"
 GAMEPROCESS_LOG = Path.home() / ".local/share/Steam/logs/gameprocess_log.txt"
 STEAMAPPS_DIR   = Path.home() / ".local/share/Steam/steamapps"
 LIBRARYCACHE    = Path.home() / ".local/share/Steam/appcache/librarycache"
@@ -364,8 +365,9 @@ class MangoHudReader(threading.Thread):
             return
 
         now = time.time()
-        # Alle CSVs die in den letzten 60s beschrieben wurden (großzügig — Ladebildschirme!)
-        csvs = [f for f in MANGOHUD_OUT.glob("*.csv")
+        # CSVs in output_folder + Fallback $HOME (output_folder wird in pressure-vessel manchmal ignoriert)
+        candidates = list(MANGOHUD_OUT.glob("*.csv")) + list(Path.home().glob("*.csv"))
+        csvs = [f for f in candidates
                 if "_summary" not in f.name and now - f.stat().st_mtime < 60]
         if not csvs:
             return  # MangoHud schreibt noch nicht / Ladebildschirm — kein Spielende!
@@ -443,6 +445,169 @@ class MangoHudReader(threading.Thread):
                 print(f"[MANGO] Konnte {f.name} nicht löschen: {e}")
 
 
+def _ensure_mangohud_env_config():
+    """Stellt sicher, dass MANGOHUD=1 + korrekte MANGOHUD_CONFIG global gesetzt sind.
+
+    environment.d wird nur beim Login eingelesen (siehe MANGOHUD_DEBUG.md) — ein
+    Reparieren hier wirkt erst nach Reboot/Neu-Login. Ohne diesen Check bliebe
+    das MangoHud-Logging dauerhaft und unbemerkt tot, sobald die Config fehlt
+    (frisches Stock-System ohne host-setup.sh) oder versehentlich falsch
+    editiert wird — z.B. host-setup.sh nie gelaufen, oder jemand fügt aus
+    Gewohnheit wieder `no_display` hinzu.
+
+    WICHTIG: `no_display` darf hier NICHT stehen — MANGOHUD_CONFIG hat Vorrang
+    vor MANGOHUD_CONFIGFILE und wird beim finalen Env-Reapply immer komplett
+    neu angewendet, würde also den Deadlock-Fix aus _ensure_mangohud_patch()
+    (no_display=0) permanent auf 1 zurückkippen (ROOT CAUSE #3, siehe
+    MANGOHUD_DEBUG.md).
+    """
+    desired_config = {
+        "autostart_log": "1",
+        "log_duration": "0",
+        "fps_sampling_period": "100",
+        "output_folder": str(MANGOHUD_OUT),
+        "read_cfg": "1",
+    }
+
+    current: dict[str, str] = {}
+    try:
+        for line in MANGOHUD_ENV_CONF.read_text().splitlines():
+            line = line.split("#", 1)[0].strip()
+            if "=" in line:
+                k, _, v = line.partition("=")
+                current[k.strip()] = v.strip()
+    except OSError:
+        pass
+
+    current_config: dict[str, str] = {}
+    for item in current.get("MANGOHUD_CONFIG", "").split(","):
+        item = item.strip()
+        if not item:
+            continue
+        k, _, v = item.partition("=")
+        current_config[k.strip()] = v.strip()
+
+    ok = (
+        current.get("MANGOHUD") == "1"
+        and "no_display" not in current_config
+        and all(current_config.get(k) == v for k, v in desired_config.items())
+    )
+    if ok:
+        return
+
+    config_str = ",".join(f"{k}={v}" for k, v in desired_config.items())
+    content = (
+        "# Von bc250_daemon.py automatisch sichergestellt (_ensure_mangohud_env_config).\n"
+        "# WICHTIG: no_display hier NICHT setzen, siehe MANGOHUD_DEBUG.md (ROOT CAUSE #3).\n"
+        "MANGOHUD=1\n"
+        f"MANGOHUD_CONFIG={config_str}\n"
+    )
+    try:
+        MANGOHUD_ENV_CONF.parent.mkdir(parents=True, exist_ok=True)
+        MANGOHUD_ENV_CONF.write_text(content)
+        print(f"[MANGO] {MANGOHUD_ENV_CONF} repariert/angelegt — "
+              f"Reboot/Neu-Login nötig, damit es wirkt!")
+    except OSError as e:
+        print(f"[MANGO] Konnte {MANGOHUD_ENV_CONF} nicht schreiben: {e}")
+
+
+def _resolve_mangohud_configfile(pid: int) -> "Path | None":
+    """Liest MANGOHUD_CONFIGFILE aus /proc/<pid>/environ, falls gesetzt."""
+    try:
+        environ = Path(f"/proc/{pid}/environ").read_bytes()
+    except OSError:
+        return None
+    m = re.search(rb"MANGOHUD_CONFIGFILE=([^\0]*)", environ)
+    if not m:
+        return None
+    return Path(m.group(1).decode())
+
+
+def _ensure_mangohud_patch(configfile: Path):
+    """Hält Steams generierte MANGOHUD_CONFIGFILE dauerhaft im gewünschten Zustand.
+
+    Sobald MANGOHUD_CONFIGFILE gesetzt ist (Steams In-Game-Overlay-Verwaltung,
+    /tmp/mangohud.<random>, neu pro Spielstart), ignoriert MangoHud MANGOHUD_CONFIG
+    (environment.d) und ~/.config/MangoHud/MangoHud.conf komplett — nur diese
+    Datei zählt. Wird aus SteamWatcher._check() bei jedem Poll (STEAM_INTERVAL)
+    für die aktive Configfile aufgerufen, nicht nur einmal beim Spielstart:
+    Steam schreibt dieselbe Datei live neu, wenn im Spiel der Overlay-Level
+    (Aus/FPS/Detailliert, Quick-Access-Menu) umgeschaltet wird, und MangoHud
+    selbst beobachtet die Datei per inotify (IN_MODIFY) und liest sie bei jeder
+    Änderung komplett neu ein (src/notify.cpp) — unser Nachpatchen wird also
+    ebenso live übernommen, kein Neustart des Spiels nötig.
+
+    autostart_log/output_folder werden IMMER erzwungen: das CSV-Logging fürs
+    Pi-HUD läuft unabhängig davon, ob Steams eigenes Overlay gerade sichtbar
+    ist oder nicht.
+
+    no_display=0 + alpha=0 werden NUR erzwungen, wenn Steams aktueller
+    Overlay-Level "Aus" ist (bare `no_display` in der Datei). Grund: MangoHud
+    0.8.2 hat einen Deadlock (overlay.cpp:313) — update_hud_info_with_frametime(),
+    und damit der autostart_log-Trigger darin, läuft nur wenn `!no_display ||
+    logger->is_active()`. logger->is_active() ist beim Start immer false, also
+    verhindert no_display=1 für immer, dass autostart_log je feuert. Deshalb
+    hier no_display=0 erzwingen (spätere Zeile gewinnt, MangoHud parst Keys in
+    eine Map), damit update_hud_info_with_frametime() überhaupt läuft.
+    Sichtbar bleibt dadurch aber ein leeres Overlay-Fenster auf dem
+    Spiel-Monitor (overlay.cpp:694 ist ein separater, von no_display/
+    autostart_log unabhängiger Codepfad) — das wird über `alpha=0` unsichtbar
+    gemacht: ein einziger globaler ImGui-Style-Alpha-Multiplikator
+    (`ImGui::PushStyleVar(ImGuiStyleVar_Alpha, params.alpha)`, overlay.cpp:335),
+    der vor jedem Frame gepusht wird und Text + Hintergrund + Rahmen gleichermaßen
+    trifft — bewusst KEIN Abschalten einzelner Widgets (fps=0 etc.), da das
+    beeinflussen könnte, was intern berechnet/geloggt wird. Ist Steams Overlay
+    dagegen sichtbar (kein no_display gesetzt), greift der Deadlock ohnehin
+    nicht — dann bleibt die Anzeige unangetastet, wie vom Nutzer in den
+    Steam-Overlay-Einstellungen gewählt. Siehe ~/Dokumente/hud/MANGOHUD_DEBUG.md.
+    """
+    try:
+        content = configfile.read_text()
+    except OSError:
+        return
+
+    # Aktuellen Stand nachbilden wie MangoHud selbst (Map, letzte Zeile pro Key
+    # gewinnt) — nötig um zu wissen, ob no_display gerade aktiv ist UND um
+    # unnötige Re-Writes zu vermeiden, wenn schon alles passt.
+    current: dict[str, str] = {}
+    for line in content.splitlines():
+        line = line.split("#", 1)[0]
+        if "=" in line:
+            k, _, v = line.partition("=")
+        else:
+            k, v = line, "1"
+        k = k.strip()
+        if k:
+            current[k] = v.strip()
+
+    off = current.get("no_display", "0") not in ("0", "false", "False", "")
+
+    desired = {
+        "autostart_log": "1",
+        "log_duration": "0",
+        "fps_sampling_period": "100",
+        "output_folder": str(MANGOHUD_OUT),
+    }
+    if off:
+        desired.update({
+            "no_display": "0",
+            "alpha": "0",
+        })
+
+    missing = {k: v for k, v in desired.items() if current.get(k) != v}
+    if not missing:
+        return
+
+    extra = "\n" + "\n".join(f"{k}={v}" for k, v in missing.items()) + "\n"
+    try:
+        with open(configfile, "a") as f:
+            f.write(extra)
+        mode = "no_display-Deadlock-Fix" if off else "nur autostart_log (Steam-Overlay sichtbar)"
+        print(f"[MANGO] {configfile} gepatcht ({mode})")
+    except OSError as e:
+        print(f"[MANGO] Konnte {configfile} nicht patchen: {e}")
+
+
 # ─── SteamWatcher ─────────────────────────────────────────────────────────────
 
 class SteamWatcher(threading.Thread):
@@ -461,6 +626,7 @@ class SteamWatcher(threading.Thread):
         self._active_appid: int | None = None
         self._active_pids: set[int] = set()
         self._last_start: dict[int, float] = {}  # appid → monotonic time
+        self._active_configfile: Path | None = None
 
     def run(self):
         # Dateigröße ans Ende setzen (nur neue Events interessieren)
@@ -496,6 +662,10 @@ class SteamWatcher(threading.Thread):
                 if appid < 10:  # Steam-interne Prozesse ignorieren
                     continue
                 self._active_pids.add(pid)
+                configfile = _resolve_mangohud_configfile(pid)
+                if configfile is not None:
+                    self._active_configfile = configfile
+                    _ensure_mangohud_patch(configfile)
                 if appid != self._active_appid:
                     self._active_appid = appid
                     now = time.monotonic()
@@ -511,6 +681,7 @@ class SteamWatcher(threading.Thread):
                 self._active_pids.discard(pid)
                 if not self._active_pids and self._active_appid is not None:
                     self._active_appid = None
+                    self._active_configfile = None
                     with self._lock:
                         for key in ("game_name", "game_appid",
                                     "fps", "frametime_ms",
@@ -525,6 +696,13 @@ class SteamWatcher(threading.Thread):
                     with self._cmd_lock:
                         self._pending.append({"cmd": "running"})
                     print("[STEAM] Spiel beendet → cmd: running, CSVs gelöscht")
+
+        # Nachpatchen bei jedem Poll (nicht nur bei neuer PID): Steam schreibt
+        # dieselbe Configfile live neu, wenn im Spiel der Overlay-Level
+        # umgeschaltet wird (Quick-Access-Menu) — das muss ohne neue PID
+        # erkannt werden.
+        if self._active_configfile is not None:
+            _ensure_mangohud_patch(self._active_configfile)
 
     def _on_game_start(self, appid: int):
         # Alte MangoHud-Logs aufräumen bevor das neue Spiel beginnt
@@ -671,7 +849,7 @@ class TCPSender(threading.Thread):
             # Daten-Paket senden
             with self._lock:
                 data = dict(self._shared)
-                gaming = "fps" in data  # MangoHudReader schreibt fps nur wenn Spiel aktiv
+                gaming = "game_appid" in data  # SteamWatcher ist Autorität; fps fehlt bei Ladebildschirmen
             # Explizites gaming-Flag in jedem Paket: Pi erkennt Spielstatus ohne
             # auf fps-Feld-Präsenz angewiesen zu sein; ermöglicht 5s Auto-Stop-Timer.
             data["gaming"] = gaming
@@ -741,6 +919,8 @@ def main():
 
     # SIGTERM-Handler registrieren (systemd sendet SIGTERM bei stop/shutdown/reboot)
     signal.signal(signal.SIGTERM, _sigterm_handler)
+
+    _ensure_mangohud_env_config()
 
     shared   = {}
     lock     = threading.Lock()

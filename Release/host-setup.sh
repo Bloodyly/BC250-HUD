@@ -6,6 +6,7 @@
 #      - autoconnect, nie als Default-Route
 #   2. bc250_daemon.service (HUD-Daemon) installieren und aktivieren
 #   3. Sleep/Wake-Hook installieren
+#   4. MangoHud environment.d Config installieren (Logging fürs Pi-HUD)
 #
 # Aufruf (auf dem BC250-PC, als normaler User):
 #   bash host-setup.sh
@@ -43,7 +44,7 @@ if [ -f "$UDEV_RULE" ]; then
 fi
 
 # ── 1. USB-Gadget Interface finden ────────────────────────────────────────────
-step "1/4 USB-Gadget Interface erkennen..."
+step "1/5 USB-Gadget Interface erkennen..."
 
 # Suche nach Interface mit cdc_ether-Treiber (USB Gadget Ethernet)
 CDC_IF=""
@@ -69,7 +70,7 @@ fi
 log "USB-Gadget Interface: $CDC_IF"
 
 # ── 2. NetworkManager-Verbindung erstellen ─────────────────────────────────────
-step "2/4 NetworkManager-Verbindung konfigurieren..."
+step "2/5 NetworkManager-Verbindung konfigurieren..."
 
 # Alte Verbindung löschen falls vorhanden
 nmcli connection delete "hud-usb-gadget" 2>/dev/null || true
@@ -90,7 +91,7 @@ log "Verbindung aktivieren..."
 nmcli connection up "hud-usb-gadget" || warn "Aktivierung fehlgeschlagen — Pi verbunden?"
 
 # ── 3. bc250_daemon installieren ──────────────────────────────────────────────
-step "3/4 bc250_daemon installieren..."
+step "3/5 bc250_daemon installieren..."
 
 sudo install -m 755 "$SCRIPT_DIR/daemon/bc250_daemon.py" /opt/hud/bc250_daemon.py 2>/dev/null || {
     sudo mkdir -p /opt/hud
@@ -113,7 +114,22 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now bc250_daemon.service
 log "bc250_daemon.service aktiviert."
 
-# ── 4/4 systemd-udev-settle maskieren (3-Min-Boot-Timeout) ─────────────────────
+# ── 4/5 MangoHud environment.d Config installieren ─────────────────────────────
+step "4/5 MangoHud-Logging-Config installieren..."
+
+MANGOHUD_ENV_DIR="$HOME/.config/environment.d"
+MANGOHUD_ENV_CONF="$MANGOHUD_ENV_DIR/mangohud-logging.conf"
+MANGOHUD_OUTPUT_FOLDER="$HOME/.local/share/MangoHud/logs"
+
+mkdir -p "$MANGOHUD_ENV_DIR"
+sed "s|__OUTPUT_FOLDER__|${MANGOHUD_OUTPUT_FOLDER}|" \
+    "$SCRIPT_DIR/config/mangohud-logging.conf" > "$MANGOHUD_ENV_CONF"
+
+log "MangoHud-Config installiert: $MANGOHUD_ENV_CONF"
+warn "environment.d wird nur beim Login eingelesen — Reboot oder Neu-Login nötig,"
+warn "damit MANGOHUD=1 in der Gamescope-Session ankommt!"
+
+# ── 5/5 systemd-udev-settle maskieren (3-Min-Boot-Timeout) ─────────────────────
 if systemctl is-enabled systemd-udev-settle.service 2>/dev/null | grep -qv "masked"; then
     warn "systemd-udev-settle wird maskiert (verhindert 3-Min-Boot-Delay)..."
     sudo systemctl mask systemd-udev-settle.service
@@ -128,6 +144,7 @@ log " USB-Gadget  : $CDC_IF → 10.10.5.1/30"
 log " NM-Profil   : hud-usb-gadget (autoconnect, never-default)"
 log " Daemon      : /opt/hud/bc250_daemon.py"
 log " Service     : bc250_daemon.service (aktiv)"
+log " MangoHud    : $MANGOHUD_ENV_CONF (Reboot/Neu-Login nötig!)"
 log ""
 log " Pi erreichbar unter: 10.10.5.2"
 log " Test: ssh pi@10.10.5.2"
